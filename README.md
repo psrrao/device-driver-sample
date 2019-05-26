@@ -1,2 +1,2 @@
-# device-driver-sample
-Sample device driver code
+# Character Devic Driver
+A Basic Character Devic Driver
