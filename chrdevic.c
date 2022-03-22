@@ -1,135 +1,105 @@
-#include <linux/module.h>
 #include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/fs.h>
-#include <linux/types.h>
-#include <linux/fcntl.h>
-#include <linux/slab.h>
-#include <linux/cdev.h>
-#include <linux/sched.h>
-#include <linux/errno.h>
 #include <asm/uaccess.h>
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("P Srinivas Rao");
+MODULE_DESCRIPTION("A simple Linux loadable Kernel Module.");
+MODULE_VERSION("0.01");
 
-/* Initialization and cleanup Routines.*/
-static int init_chrdevic(void);
-static void exit_chrdevic(void);
+#define DEVICE_NAME "lkm_example"
+#define EXAMPLE_MSG "Hello, World!\n"
+#define MSG_BUFFER_LEN 15
 
-module_init(init_chrdevic);
-module_exit(exit_chrdevic);
+/* Prototypes for device functions */
+static int device_open(struct inode *, struct file *);
+static int device_release(struct inode *, struct file *);
+static ssize_t device_read(struct file *, char *, size_t, loff_t *);
+static ssize_t device_write(struct file *, const char *, size_t, loff_t *);
+static int major_num;
+static int device_open_count = 0;
+static char msg_buffer[MSG_BUFFER_LEN];
+static char *msg_ptr;
 
-/* Basic devic operation */
-static int chrdevic_open(struct inode *inode, struct file *filep);
-static int chrdevic_release(struct inode *inode, struct file *filep);
-static int chrdevic_read(struct file *filep, char *buf, size_t lbuf, loff_t *ppos);
-static int chrdevic_write(struct file *filep, const char *buf, size_t lbuf, loff_t *ppos);
-static loff_t chrdevic_lseek(struct file *filep, loff_t offset, int orig);
-static int chrdevic_ioctl(struct inode *inode, struct file *filep, unsigned int cmd, unsigned long args);
+/* This structure points to all of the device functions */
+static struct file_operations file_ops = {
+  .owner = THIS_MODULE,
+  .read = device_read,
+  .write = device_write,
+  .open = device_open,
+  .release = device_release
+};
 
-/* file operations structure */
-static struct file_operations chrdevic_fileops;
+/* When a process reads from our device, this gets called. */
+static ssize_t device_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
+ int bytes_read = 0;
+ /* If we're at the end, loop back to the beginning */
+ if (*msg_ptr == 0) {
+   msg_ptr = msg_buffer;
+  }
 
- 
-/* Variable declaration */
-#define CHAR_DEVIC_NAME "SAMPLE_DEVIC"
-#define MAX_LENGTH 4000
-
-static int chrdevic_id;
-static struct cdev *chrdevic;
-static dev_t devicnums;
-
-/**
-
- * Driver initialization routine.It shows how to register a char device
-
- * Look it closely, important routine to understand a char driver.
-  
- * */
-static __init int init_chrdevic(void)
-{
-	int  ret;
-
-	/* Initialize the file operations structure object as we did earlier */
-	chrdevic_fileops.owner = THIS_MODULE;
-	chrdevic_fileops.read = chrdevic_read;
-	chrdevic_fileops.write = chrdevic_write;
-	chrdevic_fileops.open = chrdevic_open;
-	chrdevic_fileops.release = chrdevic_release;
-	chrdevic_fileops.llseek = chrdevic_lseek;
-	chrdevic_fileops.ioctl = chrdevic_ioctl;
-
-	/* Acquire the major and minor numbers for your driver module */
-	/* We are passing 0 in the second argument and passing 1 in the */
-	/* third argument. That means we want to request only one minor number for */  
-	/* this major number and so that minor number would be 0 */
-
-	ret = alloc_chrdev_region(&devicnums, 0 ,1 , "SAMPLE_DEVIC");
-
-	chrdevic_id = MAJOR(devicnums);//Get the major no
-
-	chrdevic = cdev_alloc();//Get an allocated cdev structure
-
-    	/*Register the character Device*/
-	chrdevic->owner = THIS_MODULE;
-	chrdevic->ops = &chrdevic_fileops;
-
-    	/* Add this to the kernel */
-	ret = cdev_add(chrdevic, devicnums, 1);
-	if(ret < 0)
-	{
-		printk("Error registering devic driver with MAJOR NO [%d]\n",chrdevic_id);
-		return ret;
-	}
-	printk("Devic successfully with MAJOR NUMBER [%d]\n",chrdevic_id);
-	printk("Devic successfully with MINOR NUMBER [%d]\n",MINOR(devicnums));
-	return 0;
+ /* Put data in the buffer */
+ while (len && *msg_ptr) {
+ /* Buffer is in user data, not kernel, so you can't just reference
+ * with a pointer. The function put_user handles this for us */
+ put_user(*(msg_ptr++), buffer++);
+ len--;
+ bytes_read++;
+ }
+ return bytes_read;
 }
 
-
-/* Module Cleanup. Simply returns back the major,minor number and the cdev   object resources back.*/
-static __exit void exit_chrdevic(void)
-{
-	printk("\n MODULE Removed");
-	unregister_chrdev_region(devicnums,1);
-	cdev_del(chrdevic);
+/* Called when a process tries to write to our device */
+static ssize_t device_write(struct file *filep, const char *buffer, size_t len, loff_t *offset) {
+ /* This is a read-only device */
+ printk(KERN_ALERT "This operation is not supported.\n");
+ return -EINVAL;
 }
 
-static int chrdevic_open(struct inode *inode, struct file *filep)
-{
-	static int counter = 0;
-	counter++;
-	printk("Number of times open() was called: %d\n",counter);
-	printk("Process id of current process: %d\n",current->pid);
-	return 0;
+/* Called when a process opens our device */
+static int device_open(struct inode *inode, struct file *file) {
+ /* If device is open, return busy */
+ if (device_open_count) {
+   return -EBUSY;
+  }
+ device_open_count++;
+ try_module_get(THIS_MODULE);
+ return 0;
 }
 
-static int chrdevic_release(struct inode *inode, struct file *filep)
-{
-	printk("close called\n");
-	return 0;
+/* Called when a process closes our device */
+static int device_release(struct inode *inode, struct file *file) {
+ /* Decrement the open counter and usage count. Without this, the module would not unload. */
+ device_open_count--;
+ module_put(THIS_MODULE);
+ return 0;
 }
 
-static int chrdevic_read(struct file *filep, char *buf, size_t lbuf, loff_t *ppos)
-{
-	printk("READ called\n");
-	return 0;
+static int __init lkm_example_init(void) {
+ /* Fill buffer with our message */
+ strncpy(msg_buffer, EXAMPLE_MSG, MSG_BUFFER_LEN);
+
+ /* Set the msg_ptr to the buffer */
+ msg_ptr = msg_buffer;
+
+ /* Try to register character device */
+ major_num = register_chrdev(0, "lkm_example", &file_ops);
+
+ if (major_num < 0) {
+   printk(KERN_ALERT "Could not register device: %d\n", major_num);
+   return major_num;
+  } else {
+    printk(KERN_INFO "lkm_example module loaded with device major number %d\n", major_num);
+    return 0;
+    }
 }
 
-static int chrdevic_write(struct file *filep, const char *buf, size_t lbuf, loff_t *ppos)
-{
-	printk("Write called\n");
-	return 0;
+static void __exit lkm_example_exit(void) {
+ /* Remember: we have to clean up after ourselves. Unregister the character device. */
+ unregister_chrdev(major_num, DEVICE_NAME);
+ printk(KERN_INFO "Goodbye, World!\n");
 }
-
-static loff_t chrdevic_lseek(struct file *filep, loff_t offset, int orig)
-{
-	printk("lseek called\n");
-	return 0;
-}
-
-static int chrdevic_ioctl(struct inode *inode, struct file *filep, unsigned int cmd, unsigned long args)
-{
-	printk("ioctl called\n");
-	return 0;
-}
-
-MODULE_AUTHOR("Srinivas");
-MODULE_DESCRIPTION("A Basic Character Devic Driver");
+/* Register module functions */
+module_init(lkm_example_init);
+module_exit(lkm_example_exit);
